@@ -52,9 +52,8 @@ Open the HTML file in a modern browser:
 
 - **Grid Size**  
   Controls detail level  
-  - 48–100 = good balance  
-  - 120+ = heavy  
-  - 400+ = image-only mode
+  - 48–200 = good balance  
+  - 250+ = heavy  
 
 - **Duration**  
   Animation time in seconds
@@ -156,18 +155,9 @@ ffmpeg -i animation_hd.webm -movflags faststart output.mp4
 You can expand this tool with:
 
 * GIF export
-* Face auto-detection
 * Color profiles
-* 4K rendering
+* 2K rendering
 * Offline frame rendering
-* Upscaler
-* FFmpeg batch exporter
-
----
-
-## 📜 License
-
-Free to use and modify.
 
 ---
 
