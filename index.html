@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pixel Rearranger Animation</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      gap: 16px;
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0;
+    }
+    .panel {
+      background: #020617;
+      border-radius: 12px;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+      max-width: 720px;
+      width: 100%;
+    }
+    label {
+      font-size: 14px;
+      display: block;
+      margin-bottom: 4px;
+      color: #9ca3af;
+    }
+    input[type="file"],
+    input[type="number"] {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid #1f2937;
+      background: #020617;
+      color: #e5e7eb;
+      font-size: 13px;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .row > div {
+      flex: 1;
+      min-width: 180px;
+    }
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-size: 14px;
+      cursor: pointer;
+      background: linear-gradient(135deg, #22c55e, #0ea5e9);
+      color: white;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 10px 25px rgba(34,197,94,0.35);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    canvas {
+      border-radius: 16px;
+      background: black;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.7);
+    }
+    .status {
+      font-size: 13px;
+      color: #9ca3af;
+      min-height: 1.4em;
+    }
+  </style>
+</head>
+<body>
+  <h1>Pixel Rearranger (Obama-style Animation)</h1>
+
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label>Base image (pixels are taken from this)</label>
+        <input type="file" id="baseInput" accept="image/*">
+      </div>
+      <div>
+        <label>Target image (final picture)</label>
+        <input type="file" id="targetInput" accept="image/*">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Grid size (tiles per side)</label>
+        <input type="number" id="gridInput" value="32" min="8" max="1024" step="1">
+      </div>
+      <div>
+        <label>Animation duration (seconds)</label>
+        <input type="number" id="durationInput" value="4" min="1" max="15" step="0.5">
+      </div>
+    </div>
+
+    <button id="startBtn">Generate & Animate</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <canvas id="canvas" width="512" height="512"></canvas>
+
+  <script>
+    const baseInput = document.getElementById('baseInput');
+    const targetInput = document.getElementById('targetInput');
+    const gridInput = document.getElementById('gridInput');
+    const durationInput = document.getElementById('durationInput');
+    const startBtn = document.getElementById('startBtn');
+    const statusEl = document.getElementById('status');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    const SIZE = 512; // canvas size (square)
+    let baseCanvas = null;
+    let tiles = [];
+    let animStartTime = null;
+    let totalDuration = 4000; // ms
+    let animationFrameId = null;
+
+    function setStatus(msg) {
+      statusEl.textContent = msg;
+    }
+
+    function loadImageFromFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = e.target.result;
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function createOffscreenCanvas(img) {
+      const c = document.createElement('canvas');
+      c.width = SIZE;
+      c.height = SIZE;
+      const cctx = c.getContext('2d');
+      // cover-fit style draw (preserve aspect ratio, fill canvas)
+      const iw = img.width;
+      const ih = img.height;
+      const scale = Math.max(SIZE / iw, SIZE / ih);
+      const dw = iw * scale;
+      const dh = ih * scale;
+      const dx = (SIZE - dw) / 2;
+      const dy = (SIZE - dh) / 2;
+      cctx.drawImage(img, dx, dy, dw, dh);
+      return c;
+    }
+
+    function computeTileColors(canvas, grid) {
+      const cctx = canvas.getContext('2d', { willReadFrequently: true });
+      const tileW = SIZE / grid;
+      const tileH = SIZE / grid;
+      const result = [];
+
+      for (let gy = 0; gy < grid; gy++) {
+        for (let gx = 0; gx < grid; gx++) {
+          const x = Math.round(gx * tileW);
+          const y = Math.round(gy * tileH);
+          const w = Math.round(tileW);
+          const h = Math.round(tileH);
+          const imgData = cctx.getImageData(x, y, w, h);
+          const data = imgData.data;
+          let r = 0, g = 0, b = 0;
+          const len = data.length / 4;
+          for (let i = 0; i < data.length; i += 4) {
+            r += data[i];
+            g += data[i + 1];
+            b += data[i + 2];
+          }
+          r /= len;
+          g /= len;
+          b /= len;
+          result.push({
+            gx,
+            gy,
+            color: [r, g, b]
+          });
+        }
+      }
+      return result;
+    }
+
+    function colorDist2(a, b) {
+      const dr = a[0] - b[0];
+      const dg = a[1] - b[1];
+      const db = a[2] - b[2];
+      return dr * dr + dg * dg + db * db;
+    }
+
+    // Greedy one-to-one matching: for each target tile, pick closest unused base tile
+    function buildTiles(baseCanvas, baseColors, targetColors, grid) {
+      const tileW = SIZE / grid;
+      const tileH = SIZE / grid;
+      const used = new Array(baseColors.length).fill(false);
+      const tiles = [];
+
+      for (let i = 0; i < targetColors.length; i++) {
+        const target = targetColors[i];
+        let bestIdx = -1;
+        let bestDist = Infinity;
+
+        for (let j = 0; j < baseColors.length; j++) {
+          if (used[j]) continue;
+          const d = colorDist2(target.color, baseColors[j].color);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIdx = j;
+          }
+        }
+
+        if (bestIdx === -1) continue; // shouldn't happen
+
+        used[bestIdx] = true;
+        const base = baseColors[bestIdx];
+
+        const sx = Math.round(base.gx * tileW);
+        const sy = Math.round(base.gy * tileH);
+        const startX = sx;
+        const startY = sy;
+        const targetX = Math.round(target.gx * tileW);
+        const targetY = Math.round(target.gy * tileH);
+
+        tiles.push({
+          sx,
+          sy,
+          w: Math.round(tileW),
+          h: Math.round(tileH),
+          startX,
+          startY,
+          targetX,
+          targetY,
+          progress: 0,
+          delay: Math.random() * 0.7 // random delay in seconds for wavey effect
+        });
+      }
+
+      return tiles;
+    }
+
+    function ease(t) {
+      // smoothstep: 0 -> 1 with smooth start/end
+      return t * t * (3 - 2 * t);
+    }
+
+    function startAnimationLoop() {
+      if (!tiles || tiles.length === 0) return;
+      animStartTime = null;
+
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
+
+      function frame(timestamp) {
+        if (!animStartTime) animStartTime = timestamp;
+        const elapsedMs = timestamp - animStartTime;
+        const elapsedSec = elapsedMs / 1000;
+
+        ctx.clearRect(0, 0, SIZE, SIZE);
+
+        let allDone = true;
+
+        for (const tile of tiles) {
+          const tRaw = (elapsedSec - tile.delay) / (totalDuration / 1000 - tile.delay);
+          let p = Math.min(Math.max(tRaw, 0), 1);
+          if (p < 1) allDone = false;
+          const e = ease(p);
+
+          const x = tile.startX + (tile.targetX - tile.startX) * e;
+          const y = tile.startY + (tile.targetY - tile.startY) * e;
+
+          ctx.drawImage(
+            baseCanvas,
+            tile.sx, tile.sy, tile.w, tile.h,
+            x, y, tile.w, tile.h
+          );
+        }
+
+        if (!allDone) {
+          animationFrameId = requestAnimationFrame(frame);
+        } else {
+          animationFrameId = null;
+          setStatus("Animation complete. Change settings or images and click again to re-run.");
+        }
+      }
+
+      animationFrameId = requestAnimationFrame(frame);
+    }
+
+    async function generateAndAnimate() {
+      const baseFile = baseInput.files[0];
+      const targetFile = targetInput.files[0];
+      const grid = parseInt(gridInput.value, 10) || 32;
+      const durationSec = parseFloat(durationInput.value) || 4;
+
+      if (!baseFile || !targetFile) {
+        alert("Please select both a base image and a target image.");
+        return;
+      }
+
+      if (grid < 8 || grid > 1024) {
+        alert("Grid size should be between 8 and 1024.");
+        return;
+      }
+
+      totalDuration = durationSec * 1000;
+
+      startBtn.disabled = true;
+      setStatus("Loading images...");
+
+      try {
+        const [baseImg, targetImg] = await Promise.all([
+          loadImageFromFile(baseFile),
+          loadImageFromFile(targetFile)
+        ]);
+
+        setStatus("Preparing canvases...");
+        baseCanvas = createOffscreenCanvas(baseImg);
+        const targetCanvas = createOffscreenCanvas(targetImg);
+
+        setStatus("Computing tile colors...");
+        const baseColors = computeTileColors(baseCanvas, grid);
+        const targetColors = computeTileColors(targetCanvas, grid);
+
+        setStatus("Matching tiles (color-based)...");
+        tiles = buildTiles(baseCanvas, baseColors, targetColors, grid);
+
+        setStatus("Animating...");
+        startAnimationLoop();
+
+      } catch (err) {
+        console.error(err);
+        alert("Something went wrong. Check the console for details.");
+        setStatus("Error. See console.");
+      } finally {
+        startBtn.disabled = false;
+      }
+    }
+
+    startBtn.addEventListener('click', generateAndAnimate);
+  </script>
+</body>
+</html>
