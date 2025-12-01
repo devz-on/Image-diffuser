@@ -1,4 +1,3 @@
-markdown
 # Pixel Rearranger (HD Export)
 
 A browser-based tool that animates pixels from one image to reconstruct another image, inspired by the "Obama pixel animation" style.  
@@ -118,30 +117,6 @@ Saves the final image as a PNG.
 
 ---
 
-## 🔥 Smart Performance Rules
-
-To avoid crashing your browser:
-
-### ✅ Preview clamping
-Preview auto-reduces grid above 120.
-
-### ✅ Image-only mode
-
-If:
-
-```
-
-Grid Size > 400
-
-````
-
-Then:
-- ❌ No animation
-- ❌ No video
-- ✅ Instant final image render only
-
----
-
 ## 📁 Example Output
 
 - `animation_hd.webm` → HD video  
@@ -197,5 +172,3 @@ Free to use and modify.
 ---
 
 Enjoy creating pixel animations 🚀
-
-```
