@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Pixel Rearranger Animation</title>
+  <title>Pixel Re-mapper</title>
   <style>
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -17,6 +17,7 @@
     h1 {
       font-size: 24px;
       margin: 0;
+      text-align: center;
     }
     .panel {
       background: #020617;
@@ -26,7 +27,7 @@
       flex-direction: column;
       gap: 12px;
       box-shadow: 0 20px 40px rgba(0,0,0,0.5);
-      max-width: 720px;
+      max-width: 760px;
       width: 100%;
     }
     label {
@@ -36,7 +37,8 @@
       color: #9ca3af;
     }
     input[type="file"],
-    input[type="number"] {
+    input[type="number"],
+    select {
       width: 100%;
       padding: 6px 8px;
       border-radius: 8px;
@@ -67,6 +69,12 @@
       align-items: center;
       gap: 6px;
       box-shadow: 0 10px 25px rgba(34,197,94,0.35);
+      justify-content: center;
+      text-align: center;
+    }
+    button.secondary {
+      background: #111827;
+      box-shadow: none;
     }
     button:disabled {
       opacity: 0.5;
@@ -77,16 +85,24 @@
       border-radius: 16px;
       background: black;
       box-shadow: 0 20px 40px rgba(0,0,0,0.7);
+      max-width: 540px;
+      width: 100%;
+      height: auto;
     }
     .status {
       font-size: 13px;
       color: #9ca3af;
       min-height: 1.4em;
     }
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
   </style>
 </head>
 <body>
-  <h1>Pixel Rearranger (Obama-style Animation)</h1>
+  <h1>Pixel Re-mapper (HD Export)</h1>
 
   <div class="panel">
     <div class="row">
@@ -103,36 +119,83 @@
     <div class="row">
       <div>
         <label>Grid size (tiles per side)</label>
-        <input type="number" id="gridInput" value="32" min="8" max="1024" step="1">
+        <input type="number" id="gridInput" value="48" min="8" max="1024" step="1">
       </div>
       <div>
         <label>Animation duration (seconds)</label>
-        <input type="number" id="durationInput" value="4" min="1" max="15" step="0.5">
+        <input type="number" id="durationInput" value="4" min="1" max="30" step="0.5">
       </div>
     </div>
 
-    <button id="startBtn">Generate & Animate</button>
+    <div class="row">
+      <div>
+        <label>Export resolution (square)</label>
+        <select id="resSelect">
+          <option value="720">720×720 (HD)</option>
+          <option value="1024" selected>1024×1024</option>
+          <option value="1440">1440×1440</option>
+        </select>
+      </div>
+      <div>
+        <label>Export FPS</label>
+        <select id="fpsSelect">
+          <option value="30">30 FPS</option>
+          <option value="60" selected>60 FPS</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="buttons">
+      <button id="previewBtn">Preview (fast, no video)</button>
+      <button id="exportBtn" class="secondary">Render & Download Video (HD)</button>
+      <button id="downloadBtn" style="display:none;">⬇ Download Video</button>
+      <button id="imageBtn" style="display:none;">🖼 Download Image</button>
+    </div>
+
+
     <div class="status" id="status"></div>
   </div>
 
-  <canvas id="canvas" width="512" height="512"></canvas>
+  <!-- Internal logical square; we scale for export -->
+  <canvas id="canvas" width="1024" height="1024"></canvas>
 
   <script>
     const baseInput = document.getElementById('baseInput');
     const targetInput = document.getElementById('targetInput');
     const gridInput = document.getElementById('gridInput');
     const durationInput = document.getElementById('durationInput');
-    const startBtn = document.getElementById('startBtn');
+    const resSelect = document.getElementById('resSelect');
+    const fpsSelect = document.getElementById('fpsSelect');
+    const previewBtn = document.getElementById('previewBtn');
+    const exportBtn = document.getElementById('exportBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const imageBtn = document.getElementById('imageBtn');
     const statusEl = document.getElementById('status');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-    const SIZE = 512; // canvas size (square)
+    imageBtn.onclick = downloadImage;
+
+    // Logical square resolution for computing tiles
+    const LOGICAL_SIZE = 1024;
+    canvas.width = LOGICAL_SIZE;
+    canvas.height = LOGICAL_SIZE;
+    ctx.imageSmoothingEnabled = false;
+
+    // Limits to stop browser from dying
+    const MAX_PREVIEW_GRID = 120; // fast preview
+    const MAX_EXPORT_GRID  = 200; // HD recording
+
     let baseCanvas = null;
     let tiles = [];
-    let animStartTime = null;
     let totalDuration = 4000; // ms
     let animationFrameId = null;
+
+    // MediaRecorder stuff
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let currentVideoURL = null;
+    let renderScale = 1; // export scale (canvas size / LOGICAL_SIZE)
 
     function setStatus(msg) {
       statusEl.textContent = msg;
@@ -154,33 +217,32 @@
 
     function createOffscreenCanvas(img) {
       const c = document.createElement('canvas');
-      c.width = SIZE;
-      c.height = SIZE;
+      c.width = LOGICAL_SIZE;
+      c.height = LOGICAL_SIZE;
       const cctx = c.getContext('2d');
-      // cover-fit style draw (preserve aspect ratio, fill canvas)
       const iw = img.width;
       const ih = img.height;
-      const scale = Math.max(SIZE / iw, SIZE / ih);
+      const scale = Math.max(LOGICAL_SIZE / iw, LOGICAL_SIZE / ih);
       const dw = iw * scale;
       const dh = ih * scale;
-      const dx = (SIZE - dw) / 2;
-      const dy = (SIZE - dh) / 2;
+      const dx = (LOGICAL_SIZE - dw) / 2;
+      const dy = (LOGICAL_SIZE - dh) / 2;
       cctx.drawImage(img, dx, dy, dw, dh);
       return c;
     }
 
     function computeTileColors(canvas, grid) {
       const cctx = canvas.getContext('2d', { willReadFrequently: true });
-      const tileW = SIZE / grid;
-      const tileH = SIZE / grid;
+      const tileW = LOGICAL_SIZE / grid;
+      const tileH = LOGICAL_SIZE / grid;
       const result = [];
 
       for (let gy = 0; gy < grid; gy++) {
         for (let gx = 0; gx < grid; gx++) {
-          const x = Math.round(gx * tileW);
-          const y = Math.round(gy * tileH);
-          const w = Math.round(tileW);
-          const h = Math.round(tileH);
+          const x = Math.floor(gx * tileW);
+          const y = Math.floor(gy * tileH);
+          const w = Math.ceil(tileW);
+          const h = Math.ceil(tileH);
           const imgData = cctx.getImageData(x, y, w, h);
           const data = imgData.data;
           let r = 0, g = 0, b = 0;
@@ -193,13 +255,10 @@
           r /= len;
           g /= len;
           b /= len;
-          result.push({
-            gx,
-            gy,
-            color: [r, g, b]
-          });
+          result.push({ gx, gy, color: [r, g, b] });
         }
       }
+
       return result;
     }
 
@@ -210,10 +269,9 @@
       return dr * dr + dg * dg + db * db;
     }
 
-    // Greedy one-to-one matching: for each target tile, pick closest unused base tile
-    function buildTiles(baseCanvas, baseColors, targetColors, grid) {
-      const tileW = SIZE / grid;
-      const tileH = SIZE / grid;
+    function buildTiles(baseColors, targetColors, grid, withDelays = true) {
+      const tileW = LOGICAL_SIZE / grid;
+      const tileH = LOGICAL_SIZE / grid;
       const used = new Array(baseColors.length).fill(false);
       const tiles = [];
 
@@ -231,29 +289,28 @@
           }
         }
 
-        if (bestIdx === -1) continue; // shouldn't happen
-
+        if (bestIdx === -1) continue;
         used[bestIdx] = true;
+
         const base = baseColors[bestIdx];
 
-        const sx = Math.round(base.gx * tileW);
-        const sy = Math.round(base.gy * tileH);
+        const sx = base.gx * tileW;
+        const sy = base.gy * tileH;
         const startX = sx;
         const startY = sy;
-        const targetX = Math.round(target.gx * tileW);
-        const targetY = Math.round(target.gy * tileH);
+        const targetX = target.gx * tileW;
+        const targetY = target.gy * tileH;
 
         tiles.push({
           sx,
           sy,
-          w: Math.round(tileW),
-          h: Math.round(tileH),
+          w: tileW,
+          h: tileH,
           startX,
           startY,
           targetX,
           targetY,
-          progress: 0,
-          delay: Math.random() * 0.7 // random delay in seconds for wavey effect
+          delay: withDelays ? Math.random() * 0.7 : 0
         });
       }
 
@@ -261,105 +318,249 @@
     }
 
     function ease(t) {
-      // smoothstep: 0 -> 1 with smooth start/end
       return t * t * (3 - 2 * t);
     }
 
-    function startAnimationLoop() {
-      if (!tiles || tiles.length === 0) return;
-      animStartTime = null;
-
+    function cancelAnimationIfAny() {
       if (animationFrameId !== null) {
         cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
       }
+    }
+
+    // ---------- VIDEO RECORDING HELPERS ----------
+    function startRecording(fps) {
+      if (currentVideoURL) {
+        URL.revokeObjectURL(currentVideoURL);
+        currentVideoURL = null;
+      }
+      recordedChunks = [];
+      const stream = canvas.captureStream(fps);
+      mediaRecorder = new MediaRecorder(stream, {
+        mimeType: "video/webm;codecs=vp9",
+        videoBitsPerSecond: 40_000_000 // push bitrate high
+      });
+      mediaRecorder.ondataavailable = e => {
+        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: "video/webm" });
+        const url = URL.createObjectURL(blob);
+        currentVideoURL = url;
+        downloadBtn.style.display = "inline-flex";
+        imageBtn.style.display = "inline-flex";
+        downloadBtn.onclick = () => {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "pixel_animation_hd.webm";
+          a.click();
+        };
+        setStatus("Render complete. Click \"Download Video\" to save.");
+        previewBtn.disabled = false;
+        exportBtn.disabled = false;
+      };
+      mediaRecorder.start();
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+      }
+    }
+
+    // ---------- RENDER ONE FRAME (uses logical coords, scales to canvas) ----------
+    function renderFrame(timeSec) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (const tile of tiles) {
+        const tRaw = (timeSec - tile.delay) / (totalDuration / 1000 - tile.delay);
+        const p = Math.min(Math.max(tRaw, 0), 1);
+        const e = ease(p);
+
+        const logicalX = tile.startX + (tile.targetX - tile.startX) * e;
+        const logicalY = tile.startY + (tile.targetY - tile.startY) * e;
+
+        const dx = logicalX * renderScale;
+        const dy = logicalY * renderScale;
+        const dw = tile.w * renderScale;
+        const dh = tile.h * renderScale;
+
+        ctx.drawImage(
+          baseCanvas,
+          tile.sx, tile.sy, tile.w, tile.h,
+          dx, dy, dw, dh
+        );
+      }
+    }
+
+    function downloadImage() {
+        canvas.toBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "final_frame.png";
+        a.click();
+        URL.revokeObjectURL(url);
+      }, "image/png", 1.0);
+    }
+
+    // ---------- PREVIEW ANIMATION (NO RECORDING) ----------
+    function startPreviewAnimation() {
+      cancelAnimationIfAny();
+      renderScale = 1;
+      canvas.width = LOGICAL_SIZE;
+      canvas.height = LOGICAL_SIZE;
+      ctx.imageSmoothingEnabled = false;
+
+      let startTime = null;
 
       function frame(timestamp) {
-        if (!animStartTime) animStartTime = timestamp;
-        const elapsedMs = timestamp - animStartTime;
+        if (!startTime) startTime = timestamp;
+        const elapsedMs = timestamp - startTime;
         const elapsedSec = elapsedMs / 1000;
 
-        ctx.clearRect(0, 0, SIZE, SIZE);
+        renderFrame(elapsedSec);
 
-        let allDone = true;
-
-        for (const tile of tiles) {
-          const tRaw = (elapsedSec - tile.delay) / (totalDuration / 1000 - tile.delay);
-          let p = Math.min(Math.max(tRaw, 0), 1);
-          if (p < 1) allDone = false;
-          const e = ease(p);
-
-          const x = tile.startX + (tile.targetX - tile.startX) * e;
-          const y = tile.startY + (tile.targetY - tile.startY) * e;
-
-          ctx.drawImage(
-            baseCanvas,
-            tile.sx, tile.sy, tile.w, tile.h,
-            x, y, tile.w, tile.h
-          );
-        }
-
-        if (!allDone) {
+        if (elapsedMs < totalDuration + 200) {
           animationFrameId = requestAnimationFrame(frame);
         } else {
           animationFrameId = null;
-          setStatus("Animation complete. Change settings or images and click again to re-run.");
+          setStatus("Preview complete.");
+          imageBtn.style.display = "inline-flex";
+          previewBtn.disabled = false;
+          exportBtn.disabled = false;
         }
       }
 
       animationFrameId = requestAnimationFrame(frame);
     }
 
-    async function generateAndAnimate() {
+    // ---------- EXPORT ANIMATION (WITH RECORDING) ----------
+    function startExportAnimation() {
+      cancelAnimationIfAny();
+
+      const fps = parseInt(fpsSelect.value, 10) || 60;
+      const exportSize = parseInt(resSelect.value, 10) || LOGICAL_SIZE;
+
+      renderScale = exportSize / LOGICAL_SIZE;
+      canvas.width = exportSize;
+      canvas.height = exportSize;
+      ctx.imageSmoothingEnabled = false;
+
+      let startTime = null;
+
+      startRecording(fps); // auto start recording
+
+      function frame(timestamp) {
+        if (!startTime) startTime = timestamp;
+        const elapsedMs = timestamp - startTime;
+        const elapsedSec = elapsedMs / 1000;
+
+        renderFrame(elapsedSec);
+
+        if (elapsedMs < totalDuration + 200) {
+          animationFrameId = requestAnimationFrame(frame);
+        } else {
+          animationFrameId = null;
+          stopRecording(); // auto stop when done
+        }
+      }
+
+      animationFrameId = requestAnimationFrame(frame);
+    }
+
+    // ---------- COMMON PREP ----------
+    async function prepareTiles() {
       const baseFile = baseInput.files[0];
       const targetFile = targetInput.files[0];
-      const grid = parseInt(gridInput.value, 10) || 32;
-      const durationSec = parseFloat(durationInput.value) || 4;
 
       if (!baseFile || !targetFile) {
         alert("Please select both a base image and a target image.");
-        return;
+        return null;
       }
+
+      let grid = parseInt(gridInput.value, 10) || 48;
+      const durationSec = parseFloat(durationInput.value) || 4;
+      totalDuration = durationSec * 1000;
 
       if (grid < 8 || grid > 1024) {
         alert("Grid size should be between 8 and 1024.");
+        return null;
+      }
+
+      setStatus("Loading images...");
+      const [baseImg, targetImg] = await Promise.all([
+        loadImageFromFile(baseFile),
+        loadImageFromFile(targetFile)
+      ]);
+
+      setStatus("Preparing canvases...");
+      baseCanvas = createOffscreenCanvas(baseImg);
+      const targetCanvas = createOffscreenCanvas(targetImg);
+
+      setStatus("Computing tile colors...");
+      const baseColors = computeTileColors(baseCanvas, grid);
+      const targetColors = computeTileColors(targetCanvas, grid);
+
+      return { grid, baseColors, targetColors };
+    }
+
+    // ---------- BUTTON HANDLERS ----------
+    previewBtn.addEventListener('click', async () => {
+      cancelAnimationIfAny();
+      previewBtn.disabled = true;
+      exportBtn.disabled = true;
+      downloadBtn.style.display = "none";
+      setStatus("Preparing preview...");
+
+      const prepared = await prepareTiles();
+      if (!prepared) {
+        previewBtn.disabled = false;
+        exportBtn.disabled = false;
         return;
       }
 
-      totalDuration = durationSec * 1000;
+      let { grid, baseColors, targetColors } = prepared;
 
-      startBtn.disabled = true;
-      setStatus("Loading images...");
-
-      try {
-        const [baseImg, targetImg] = await Promise.all([
-          loadImageFromFile(baseFile),
-          loadImageFromFile(targetFile)
-        ]);
-
-        setStatus("Preparing canvases...");
-        baseCanvas = createOffscreenCanvas(baseImg);
-        const targetCanvas = createOffscreenCanvas(targetImg);
-
-        setStatus("Computing tile colors...");
-        const baseColors = computeTileColors(baseCanvas, grid);
-        const targetColors = computeTileColors(targetCanvas, grid);
-
-        setStatus("Matching tiles (color-based)...");
-        tiles = buildTiles(baseCanvas, baseColors, targetColors, grid);
-
-        setStatus("Animating...");
-        startAnimationLoop();
-
-      } catch (err) {
-        console.error(err);
-        alert("Something went wrong. Check the console for details.");
-        setStatus("Error. See console.");
-      } finally {
-        startBtn.disabled = false;
+      if (grid > MAX_PREVIEW_GRID) {
+        alert(`Preview grid too high. Clamping to ${MAX_PREVIEW_GRID} for smooth preview.`);
+        grid = MAX_PREVIEW_GRID;
       }
-    }
 
-    startBtn.addEventListener('click', generateAndAnimate);
+      setStatus("Building tiles for preview...");
+      tiles = buildTiles(baseColors, targetColors, grid, true);
+
+      setStatus("Playing preview...");
+      startPreviewAnimation();
+    });
+
+    exportBtn.addEventListener('click', async () => {
+      cancelAnimationIfAny();
+      previewBtn.disabled = true;
+      exportBtn.disabled = true;
+      downloadBtn.style.display = "none";
+      setStatus("Preparing HD render...");
+
+      const prepared = await prepareTiles();
+      if (!prepared) {
+        previewBtn.disabled = false;
+        exportBtn.disabled = false;
+        return;
+      }
+
+      let { grid, baseColors, targetColors } = prepared;
+
+      if (grid > MAX_EXPORT_GRID) {
+        alert(`Grid above ${MAX_EXPORT_GRID} is extremely heavy in browsers.\nClamping to ${MAX_EXPORT_GRID} for HD export.`);
+        grid = MAX_EXPORT_GRID;
+      }
+
+      setStatus("Building tiles for export...");
+      tiles = buildTiles(baseColors, targetColors, grid, false); // no random delays for cleaner timing
+
+      setStatus("Rendering & recording in HD... (this can take a bit, keep tab focused)");
+      startExportAnimation();
+    });
   </script>
 </body>
 </html>
